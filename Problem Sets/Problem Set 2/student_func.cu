@@ -135,14 +135,22 @@ void gaussian_blur(const unsigned char* const inputChannel,
     return;
   }
 
+  __shared__ float filterShared[1024];
+  int tid = threadIdx.y * blockDim.x + threadIdx.x;
+  if (tid < filterWidth * filterWidth) {
+    filterShared[tid] = filter[tid];
+  }
+
+  __syncthreads();
+
   float out_val = 0.f;
   for (int filter_r = -filterWidth / 2; filter_r <= filterWidth / 2; ++filter_r) {
     for (int filter_c = -filterWidth / 2; filter_c <= filterWidth / 2; ++filter_c) {
       int in_r = min(max(0, out_r + filter_r), numRows - 1);
       int in_c = min(max(0, out_c + filter_c), numCols - 1);
 
+      float filterVal = filterShared[(filter_r + filterWidth / 2) * filterWidth + filter_c + filterWidth / 2];
       float imgVal = static_cast<float>(inputChannel[in_r * numCols + in_c]);
-      float filterVal = filter[(filter_r + filterWidth / 2) * filterWidth + filter_c + filterWidth / 2];
 
       out_val += imgVal * filterVal;
     }
