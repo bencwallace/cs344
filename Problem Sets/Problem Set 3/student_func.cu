@@ -81,6 +81,51 @@
 
 #include "utils.h"
 
+
+__global__
+void min_kernel(float *values, const size_t size, int k) {
+   int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+   if (tid < k) {
+      int idx = min(tid + k, (int) size - 1);
+      values[tid] = min(values[tid], values[idx]);
+   }
+}
+
+void find_min(float *min_val, const float * const d_array, const size_t size, int gridSize, int blockSize) {
+   float *d_temp_array;
+   checkCudaErrors(cudaMalloc(&d_temp_array, size * sizeof(float)));
+   checkCudaErrors(cudaMemcpy(d_temp_array, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+
+   int power_of_two = pow(2, ceil(log2f(size)));
+   for (int k=2; k <= power_of_two; k <<= 1) {
+      min_kernel<<<gridSize, blockSize>>>(d_temp_array, size, power_of_two / k);
+   }
+   checkCudaErrors(cudaMemcpy(min_val, d_temp_array, sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+__global__
+void max_kernel(float *values, const size_t size, int k) {
+   int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+   if (tid < k) {
+      int idx = min(tid + k, (int) size - 1);
+      values[tid] = max(values[tid], values[idx]);
+   }
+}
+
+void find_max(float *max_val, const float * const d_array, const size_t size, int gridSize, int blockSize) {
+   float *d_temp_array;
+   checkCudaErrors(cudaMalloc(&d_temp_array, size * sizeof(float)));
+   checkCudaErrors(cudaMemcpy(d_temp_array, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+
+   int power_of_two = pow(2, ceil(log2f(size)));
+   for (int k=2; k <= power_of_two; k <<= 1) {
+      max_kernel<<<gridSize, blockSize>>>(d_temp_array, size, power_of_two / k);
+   }
+   checkCudaErrors(cudaMemcpy(max_val, d_temp_array, sizeof(float), cudaMemcpyDeviceToHost));
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -100,5 +145,10 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+   size_t numPixels = numRows * numCols;
+   int blockSize = 1024;
+   int gridSize = ceil((float) numPixels / blockSize);
 
+   find_max(&max_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+   find_min(&min_logLum, d_logLuminance, numPixels, gridSize, blockSize);
 }
