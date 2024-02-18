@@ -120,6 +120,45 @@ void reduce(float *result, const float * const d_array, const size_t size, int g
    checkCudaErrors(cudaMemcpy(result, d_temp_array, sizeof(float), cudaMemcpyDeviceToHost));
 }
 
+template <class op_t>
+__global__ void reduce_block_kernel(float *values, float *out, int size) {
+   int offset = blockIdx.x * blockDim.x;
+   int tid = offset + threadIdx.x;
+   op_t op;
+
+   __shared__ float shm[1024];
+   shm[threadIdx.x] = values[tid];
+   __syncthreads();
+
+   for (int p = blockDim.x; p >= 1; p >>= 1) {
+      if (threadIdx.x < p >> 1) {
+         int idx = threadIdx.x + (p >> 1);
+         shm[threadIdx.x] = op(shm[threadIdx.x], shm[idx]);
+      }
+      __syncthreads();
+   }
+   if (threadIdx.x == 0) {
+      out[blockIdx.x] = shm[threadIdx.x];
+   }
+}
+
+template <class op_t>
+void reduce_block(float *result, const float * const d_array, size_t size, int gridSize, int blockSize) {
+   float *d_in, *d_out;
+   checkCudaErrors(cudaMalloc(&d_in, size * sizeof(float)));
+   checkCudaErrors(cudaMemcpy(d_in, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+   checkCudaErrors(cudaMalloc(&d_out, size * sizeof(float)));
+   checkCudaErrors(cudaMemcpy(d_out, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+
+   while (size > 1) {
+      reduce_block_kernel<op_t><<<gridSize, blockSize>>>(d_in, d_out, size);
+      cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+      d_in = d_out;
+      size = ceil((float) size / blockSize);
+   }
+   checkCudaErrors(cudaMemcpy(result, d_out, sizeof(float), cudaMemcpyDeviceToHost));
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -143,6 +182,6 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
    int blockSize = 1024;
    int gridSize = ceil((float) numPixels / blockSize);
 
-   reduce<max_op>(&max_logLum, d_logLuminance, numPixels, gridSize, blockSize);
-   reduce<min_op>(&min_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+   reduce_block<max_op>(&max_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+   reduce_block<min_op>(&min_logLum, d_logLuminance, numPixels, gridSize, blockSize);
 }
