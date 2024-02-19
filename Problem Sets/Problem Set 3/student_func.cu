@@ -159,6 +159,42 @@ void reduce_block(float *result, const float * const d_array, size_t size, int g
    checkCudaErrors(cudaMemcpy(result, d_out, sizeof(float), cudaMemcpyDeviceToHost));
 }
 
+__global__ void init_hist(
+   int *threadHists, int numHists, const float * const values, int num_vals, float min_val, float max_val, int numBins
+) {
+   int tid = blockIdx.x * blockDim.x + threadIdx.x;
+   if (tid >= num_vals) {
+      return;
+   }
+   int *hist = threadHists + tid * numBins;
+   memset(hist, numBins * sizeof(int), 0);
+
+   // int *localHist = (int *) malloc(numBins * sizeof(int));
+   int valsPerThread = ceil((float) num_vals / numHists);
+   int start = min(tid * valsPerThread, num_vals);
+   int end = min(start + valsPerThread, num_vals);
+   float binSize = (float) numBins / (max_val - min_val);
+
+   for (int i = start; i < end; ++i) {
+      int bin = floor(binSize * (values[i] - min_val));
+      bin = min(bin, numBins - 1);  // makes final bin inclusive of upper bound
+      ++hist[bin];
+   }
+}
+
+void build_hist(
+   int *hist, const float * const values, int num_vals, float min_val, float max_val, int numBins, int gridSize, int blockSize
+) {
+   int *d_threadHists;
+   int numHists = min(num_vals, blockSize * gridSize);
+   int totalHistSize = numHists * numBins * sizeof(int);
+   checkCudaErrors(cudaMalloc(&d_threadHists, totalHistSize));
+   checkCudaErrors(cudaMemset(d_threadHists, 0, totalHistSize * sizeof(int)));
+   init_hist<<<gridSize, blockSize>>>(d_threadHists, numHists, values, num_vals, min_val, max_val, numBins);
+
+   // TODO: reduce histogram
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
