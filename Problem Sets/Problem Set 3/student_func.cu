@@ -81,56 +81,66 @@
 
 #include <functional>
 #include "utils.h"
+// #include "student_func.cuh"
 
+template <typename T>
 struct min_op {
    __device__
-   float operator()(float x, float y) const {
+   T operator()(T x, T y) const {
       return min(x, y);
    }
 };
 
+template <typename T>
 struct max_op {
    __device__
-   float operator()(float x, float y) const {
+   T operator()(T x, T y) const {
       return max(x, y);
    }
 };
 
-template <class op_t>
-__global__ void reduce_kernel(float *values, const size_t size, int k) {
+struct add_op {
+   __device__
+   int operator()(int x, int y) const {
+      return x + y;
+   }
+};
+
+template <class T, class op_t>
+__global__ void reduce_kernel(T *values, const size_t size, T ident, int k) {
    int tid = blockIdx.x * blockDim.x + threadIdx.x;
    op_t op;
 
    if (tid < k) {
-      int idx = min(tid + k, (int) size - 1);
-      values[tid] = op(values[tid], values[idx]);
+      int idx = tid + k;
+      values[tid] = op(values[tid], idx < size ? values[idx] : ident);
    }
 }
 
-template <class op_t>
-void reduce(float *result, const float * const d_array, const size_t size, int gridSize, int blockSize) {
-   float *d_temp_array;
-   checkCudaErrors(cudaMalloc(&d_temp_array, size * sizeof(float)));
-   checkCudaErrors(cudaMemcpy(d_temp_array, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+template <class T, class op_t>
+void reduce(T *result, const T * const d_array, const size_t size, T ident, int gridSize, int blockSize) {
+   T *d_temp_array;
+   checkCudaErrors(cudaMalloc(&d_temp_array, size * sizeof(T)));
+   checkCudaErrors(cudaMemcpy(d_temp_array, d_array, size * sizeof(T), cudaMemcpyDeviceToDevice));
 
    int power_of_two = pow(2, ceil(log2f(size)));
    for (int k=2; k <= power_of_two; k <<= 1) {
-      reduce_kernel<op_t><<<gridSize, blockSize>>>(d_temp_array, size, power_of_two / k);
+      reduce_kernel<T, op_t><<<gridSize, blockSize>>>(d_temp_array, size, ident, power_of_two / k);
    }
-   checkCudaErrors(cudaMemcpy(result, d_temp_array, sizeof(float), cudaMemcpyDeviceToHost));
+   checkCudaErrors(cudaMemcpy(result, d_temp_array, sizeof(T), cudaMemcpyDeviceToHost));
 }
 
-template <class op_t>
-__global__ void reduce_block_kernel(float *values, float *out, int size) {
+template <class T, class op_t>
+__global__ void reduce_block_kernel(T *values, T *out, int size) {
    int offset = blockIdx.x * blockDim.x;
    int tid = offset + threadIdx.x;
    op_t op;
 
-   __shared__ float shm[1024];
+   __shared__ T shm[1024];
    shm[threadIdx.x] = values[tid];
    __syncthreads();
 
-   for (int p = blockDim.x; p >= 1; p >>= 1) {
+   for (int p = pow(2, ceil(log2f(blockDim.x))); p >= 1; p >>= 1) {
       if (threadIdx.x < p >> 1) {
          int idx = threadIdx.x + (p >> 1);
          shm[threadIdx.x] = op(shm[threadIdx.x], shm[idx]);
@@ -142,21 +152,21 @@ __global__ void reduce_block_kernel(float *values, float *out, int size) {
    }
 }
 
-template <class op_t>
-void reduce_block(float *result, const float * const d_array, size_t size, int gridSize, int blockSize) {
-   float *d_in, *d_out;
-   checkCudaErrors(cudaMalloc(&d_in, size * sizeof(float)));
-   checkCudaErrors(cudaMemcpy(d_in, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
-   checkCudaErrors(cudaMalloc(&d_out, size * sizeof(float)));
-   checkCudaErrors(cudaMemcpy(d_out, d_array, size * sizeof(float), cudaMemcpyDeviceToDevice));
+template <class T, class op_t>
+void reduce_block(T *result, const T * const d_array, size_t size, int gridSize, int blockSize) {
+   T *d_in, *d_out;
+   checkCudaErrors(cudaMalloc(&d_in, size * sizeof(T)));
+   checkCudaErrors(cudaMemcpy(d_in, d_array, size * sizeof(T), cudaMemcpyDeviceToDevice));
+   checkCudaErrors(cudaMalloc(&d_out, size * sizeof(T)));
+   checkCudaErrors(cudaMemcpy(d_out, d_array, size * sizeof(T), cudaMemcpyDeviceToDevice));
 
    while (size > 1) {
-      reduce_block_kernel<op_t><<<gridSize, blockSize>>>(d_in, d_out, size);
+      reduce_block_kernel<T, op_t><<<gridSize, blockSize>>>(d_in, d_out, size);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
       d_in = d_out;
-      size = ceil((float) size / blockSize);
+      size = ceil((T) size / blockSize);
    }
-   checkCudaErrors(cudaMemcpy(result, d_out, sizeof(float), cudaMemcpyDeviceToHost));
+   checkCudaErrors(cudaMemcpy(result, d_out, sizeof(T), cudaMemcpyDeviceToHost));
 }
 
 __global__ void init_hist(
@@ -166,10 +176,10 @@ __global__ void init_hist(
    if (tid >= num_vals) {
       return;
    }
-   int *hist = threadHists + tid * numBins;
-   memset(hist, numBins * sizeof(int), 0);
+   for (int i = 0; i < numBins; ++i) {
+      threadHists[i * numHists + tid] = 0;
+   }
 
-   // int *localHist = (int *) malloc(numBins * sizeof(int));
    int valsPerThread = ceil((float) num_vals / numHists);
    int start = min(tid * valsPerThread, num_vals);
    int end = min(start + valsPerThread, num_vals);
@@ -178,7 +188,7 @@ __global__ void init_hist(
    for (int i = start; i < end; ++i) {
       int bin = floor(binSize * (values[i] - min_val));
       bin = min(bin, numBins - 1);  // makes final bin inclusive of upper bound
-      ++hist[bin];
+      ++threadHists[bin * numHists + tid];
    }
 }
 
@@ -188,11 +198,19 @@ void build_hist(
    int *d_threadHists;
    int numHists = min(num_vals, blockSize * gridSize);
    int totalHistSize = numHists * numBins * sizeof(int);
-   checkCudaErrors(cudaMalloc(&d_threadHists, totalHistSize));
+   checkCudaErrors(cudaMalloc(&d_threadHists, totalHistSize * sizeof(int)));
    checkCudaErrors(cudaMemset(d_threadHists, 0, totalHistSize * sizeof(int)));
    init_hist<<<gridSize, blockSize>>>(d_threadHists, numHists, values, num_vals, min_val, max_val, numBins);
+   int *h_threadHists = (int *) malloc(totalHistSize * sizeof(int));
+   checkCudaErrors(cudaMemcpy(h_threadHists, d_threadHists, totalHistSize * sizeof(int), cudaMemcpyDeviceToHost));
 
-   // TODO: reduce histogram
+   int *h_bin = (int *) malloc(numHists * sizeof(int));
+   int *d_hist, *d_bin;
+   checkCudaErrors(cudaMalloc(&d_hist, sizeof(int)));
+   checkCudaErrors(cudaMalloc(&d_bin, numHists * sizeof(int)));
+   for (int i = 0; i < numBins; ++i) {
+      reduce<int, add_op>(&hist[i], d_threadHists + i * numHists, numHists, 0, gridSize, blockSize);
+   }
 }
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
@@ -218,6 +236,9 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
    int blockSize = 1024;
    int gridSize = ceil((float) numPixels / blockSize);
 
-   reduce_block<max_op>(&max_logLum, d_logLuminance, numPixels, gridSize, blockSize);
-   reduce_block<min_op>(&min_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+   reduce_block<float, max_op<float>>(&max_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+   reduce_block<float, min_op<float>>(&min_logLum, d_logLuminance, numPixels, gridSize, blockSize);
+
+   int *h_hist = (int *) malloc(numBins * sizeof(int));
+   build_hist(h_hist, d_logLuminance, numPixels, min_logLum, max_logLum, numBins, gridSize, blockSize);
 }
