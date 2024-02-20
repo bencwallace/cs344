@@ -241,4 +241,14 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
    int *h_hist = (int *) malloc(numBins * sizeof(int));
    build_hist(h_hist, d_logLuminance, numPixels, min_logLum, max_logLum, numBins, gridSize, blockSize);
+
+   // got lazy here
+   int *h_cdf = (int *) malloc(numBins * sizeof(int));
+   memset(h_cdf, numBins * sizeof(int), 0);
+   int prev = 0;
+   for (int i = 0; i < numBins; ++i) {
+      h_cdf[i] = prev + h_hist[i];
+      prev = h_cdf[i];
+   }
+   checkCudaErrors(cudaMemcpy(d_cdf, h_cdf, numBins * sizeof(int), cudaMemcpyHostToDevice));
 }
