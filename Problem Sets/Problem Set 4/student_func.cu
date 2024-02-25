@@ -43,12 +43,92 @@
  */
 
 
+void filter(
+  unsigned int *outputVals, unsigned int * const inputVals, int numElems, int numBins, unsigned int i, int b
+) {
+  unsigned int mask = (numBins - 1) << i;
+  for (int j = 0; j < numElems; ++j) {
+    unsigned int t = 1 - ((inputVals[j] & mask) >> i);  // 1 if bit is unset
+    t = t - 2 * b * t + b;  // flips t if b is 1
+    outputVals[j] = t;
+  }
+}
+
+void scan(unsigned int *outputVals, unsigned int *filterOut, int numElems) {
+  outputVals[0] = 0;
+  for (int j = 1; j < numElems; ++j) {
+    outputVals[j] = outputVals[j - 1] + filterOut[j - 1];
+  }
+}
+
+void compact(
+  unsigned int *outputVals,
+  unsigned int *outputPos,
+  unsigned int *inputVals,
+  unsigned int *inputPos,
+  unsigned int *filterOut,
+  unsigned int *scanOut,
+  int numElems
+) {
+  int j;
+  for (j = 0; j < numElems; ++j) {
+    if (filterOut[j]) {
+      outputVals[scanOut[j]] = inputVals[j];
+      outputPos[scanOut[j]] = inputPos[j];
+    }
+  }
+}
+
+
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
                unsigned int* const d_outputVals,
                unsigned int* const d_outputPos,
                const size_t numElems)
 { 
-  //TODO
-  //PUT YOUR SORT HERE
+  const int numBits = 1; // TODO: generalize
+  const int numBins = 1 << numBits;
+
+  unsigned int *binHistogram = new unsigned int[numBins];
+  unsigned int *binScan      = new unsigned int[numBins];
+
+  unsigned int *h_inputVals = new unsigned int[numElems];
+  checkCudaErrors(cudaMemcpy(h_inputVals, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+  unsigned int *h_vals_src = h_inputVals;
+
+  unsigned int *h_inputPos = new unsigned int[numElems];
+  checkCudaErrors(cudaMemcpy(h_inputPos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+  unsigned int *h_pos_src  = h_inputPos;
+
+  unsigned int *h_outputVals = new unsigned int[numElems];
+  checkCudaErrors(cudaMemcpy(h_outputVals, d_outputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+  unsigned int *h_vals_dst = h_outputVals;
+
+  unsigned int *h_outputPos = new unsigned int[numElems];
+  checkCudaErrors(cudaMemcpy(h_outputPos, d_outputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+  unsigned int *h_pos_dst  = h_outputPos;
+
+  unsigned int *h_filterOut = new unsigned int[numElems];
+  unsigned int *h_scanOut = new unsigned int[numElems];
+  for (unsigned int i = 0; i < 8 * sizeof(unsigned int); i += numBits) {
+    unsigned int start = 0;
+    for (int b = 0; b < numBins; ++b) {
+      filter(h_filterOut, h_vals_src, numElems, numBins, i, b);
+      scan(h_scanOut, h_filterOut, numElems);
+      compact(h_vals_dst + start, h_pos_dst + start, h_vals_src, h_pos_src, h_filterOut, h_scanOut, numElems);
+      start += h_scanOut[numElems - 1] + h_filterOut[numElems - 1];
+    }
+
+    std::swap(h_vals_dst, h_vals_src);
+    std::swap(h_pos_dst, h_pos_src);
+  }
+
+  std::copy(h_inputVals, h_inputVals + numElems, h_outputVals);
+  std::copy(h_inputPos, h_inputPos + numElems, h_outputPos);
+
+  delete[] binHistogram;
+  delete[] binScan;
+
+  checkCudaErrors(cudaMemcpy(d_outputVals, h_outputVals, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_outputPos, h_outputPos, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
 }
