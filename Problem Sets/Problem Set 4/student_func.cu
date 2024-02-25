@@ -98,76 +98,36 @@ void your_sort(unsigned int* const d_inputVals,
   const int numBits = 1; // TODO: generalize
   const int numBins = 1 << numBits;
 
-  unsigned int *binHistogram = new unsigned int[numBins];
-  unsigned int *binScan      = new unsigned int[numBins];
-
-  unsigned int *h_inputVals = new unsigned int[numElems];
-  checkCudaErrors(cudaMemcpy(h_inputVals, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-  unsigned int *h_vals_src = h_inputVals;
-
-  unsigned int *d_vals_src;
-  checkCudaErrors(cudaMalloc(&d_vals_src, numElems * sizeof(unsigned int)));
-
-  unsigned int *h_inputPos = new unsigned int[numElems];
-  checkCudaErrors(cudaMemcpy(h_inputPos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-  unsigned int *h_pos_src  = h_inputPos;
-
-  unsigned int *d_pos_src;
-  checkCudaErrors(cudaMalloc(&d_pos_src, numElems * sizeof(unsigned int)));
-
-  unsigned int *h_outputVals = new unsigned int[numElems];
-  checkCudaErrors(cudaMemcpy(h_outputVals, d_outputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-  unsigned int *h_vals_dst = h_outputVals;
-
-  unsigned int *d_vals_dst;
-  checkCudaErrors(cudaMalloc(&d_vals_dst, numElems * sizeof(unsigned int)));
-
-  unsigned int *h_outputPos = new unsigned int[numElems];
-  checkCudaErrors(cudaMemcpy(h_outputPos, d_outputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-  unsigned int *h_pos_dst  = h_outputPos;
-
-  unsigned int *d_pos_dst;
-  checkCudaErrors(cudaMalloc(&d_pos_dst, numElems * sizeof(unsigned int)));
+  unsigned int *d_vals_src = d_inputVals;
+  unsigned int *d_pos_src  = d_inputPos;
+  unsigned int *d_vals_dst = d_outputVals;
+  unsigned int *d_pos_dst  = d_outputPos;
 
   unsigned int *d_filterOut, *d_scanOut;
   checkCudaErrors(cudaMalloc(&d_filterOut, numElems * sizeof(unsigned int)));
   checkCudaErrors(cudaMalloc(&d_scanOut, numElems * sizeof(unsigned int)));
-  unsigned int *h_filterOut = new unsigned int[numElems];
-  unsigned int *h_scanOut = new unsigned int[numElems];
+  unsigned int *h_filterOutLast = new unsigned int[1];
+  unsigned int *h_scanOutLast = new unsigned int[1];
   for (unsigned int i = 0; i < 8 * sizeof(unsigned int); i += numBits) {
     unsigned int start = 0;
-    checkCudaErrors(cudaMemcpy(d_vals_src, h_vals_src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_vals_dst, h_vals_dst, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_pos_src, h_pos_src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_pos_dst, h_pos_dst, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
     for (int b = 0; b < numBins; ++b) {
       filter<<<gridSize, blockSize>>>(d_filterOut, d_vals_src, numElems, numBins, i, b);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-      checkCudaErrors(cudaMemcpy(h_filterOut, d_filterOut, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      checkCudaErrors(cudaMemcpy(h_filterOutLast, d_filterOut + numElems - 1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
       scan<<<gridSize, blockSize>>>(d_scanOut, d_filterOut, numElems);
-      checkCudaErrors(cudaMemcpy(h_scanOut, d_scanOut, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      checkCudaErrors(cudaMemcpy(h_scanOutLast, d_scanOut + numElems - 1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
       compact<<<gridSize, blockSize>>>(d_vals_dst, d_pos_dst, d_vals_src, d_pos_src, d_filterOut, d_scanOut, numElems, start);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-      start += h_scanOut[numElems - 1] + h_filterOut[numElems - 1];
-      checkCudaErrors(cudaMemcpy(h_vals_dst, d_vals_dst, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      checkCudaErrors(cudaMemcpy(h_pos_dst, d_pos_dst, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+      start += *h_scanOutLast + *h_filterOutLast;
     }
-    checkCudaErrors(cudaMemcpy(h_vals_src, d_vals_src, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-    checkCudaErrors(cudaMemcpy(h_pos_src, d_pos_src, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost));
 
-    std::swap(h_vals_dst, h_vals_src);
-    std::swap(h_pos_dst, h_pos_src);
+    std::swap(d_vals_dst, d_vals_src);
+    std::swap(d_pos_dst, d_pos_src);
   }
 
-  checkCudaErrors(cudaFree(d_vals_src));
   checkCudaErrors(cudaFree(d_filterOut));
+  checkCudaErrors(cudaFree(d_scanOut));
 
-  std::copy(h_inputVals, h_inputVals + numElems, h_outputVals);
-  std::copy(h_inputPos, h_inputPos + numElems, h_outputPos);
-
-  delete[] binHistogram;
-  delete[] binScan;
-
-  checkCudaErrors(cudaMemcpy(d_outputVals, h_outputVals, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
-  checkCudaErrors(cudaMemcpy(d_outputPos, h_outputPos, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_outputVals, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+  checkCudaErrors(cudaMemcpy(d_outputPos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
 }
