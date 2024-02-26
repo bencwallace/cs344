@@ -57,14 +57,34 @@ void filter(
 }
 
 __global__
-void scan(unsigned int *outputVals, unsigned int *filterOut, int numElems) {
+void scan_kernel(unsigned int *outputVals, unsigned int *inputVals, int numElems, int stage) {
   int j = blockIdx.x * blockDim.x + threadIdx.x;
-  if (j == 0) {
-    outputVals[0] = 0;
-    for (int j = 1; j < numElems; ++j) {
-      outputVals[j] = outputVals[j - 1] + filterOut[j - 1];
-    }
+  int d = 1 << stage;
+  if (j < d) {
+    outputVals[j] = inputVals[j];
+  } else if (j < numElems) {
+    outputVals[j] = inputVals[j] + inputVals[j - d];
   }
+}
+
+void scan(unsigned int *d_outputVals, unsigned int *d_inputVals, int numElems, int gridSize, int blockSize) {
+  unsigned int *d_in;
+  checkCudaErrors(cudaMalloc(&d_in, numElems * sizeof(unsigned int)));
+  unsigned int *d_in_free = d_in;
+  checkCudaErrors(cudaMemcpy(d_in, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+  unsigned int *d_out = d_outputVals;
+
+  int lastStage = ceil(log2(numElems));
+  for (int stage = 0; stage < lastStage ; ++stage) {
+    scan_kernel<<<gridSize, blockSize>>>(d_out, d_in, numElems, stage);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    std::swap(d_in, d_out);
+  }
+
+  std::swap(d_in, d_out);
+  checkCudaErrors(cudaMemcpy(d_outputVals, d_out, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+
+  checkCudaErrors(cudaFree(d_in_free));
 }
 
 __global__
@@ -105,7 +125,11 @@ void your_sort(unsigned int* const d_inputVals,
 
   unsigned int *d_filterOut, *d_scanOut;
   checkCudaErrors(cudaMalloc(&d_filterOut, numElems * sizeof(unsigned int)));
-  checkCudaErrors(cudaMalloc(&d_scanOut, numElems * sizeof(unsigned int)));
+
+  // prepend 0 entry for converting inclusive to exclusive scan
+  checkCudaErrors(cudaMalloc(&d_scanOut, (numElems + 1) * sizeof(unsigned int)));
+  checkCudaErrors(cudaMemset(d_scanOut, 0, sizeof(unsigned int)));
+
   unsigned int *h_filterOutLast = new unsigned int[1];
   unsigned int *h_scanOutLast = new unsigned int[1];
   for (unsigned int i = 0; i < 8 * sizeof(unsigned int); i += numBits) {
@@ -114,10 +138,14 @@ void your_sort(unsigned int* const d_inputVals,
       filter<<<gridSize, blockSize>>>(d_filterOut, d_vals_src, numElems, numBins, i, b);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
       checkCudaErrors(cudaMemcpy(h_filterOutLast, d_filterOut + numElems - 1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-      scan<<<gridSize, blockSize>>>(d_scanOut, d_filterOut, numElems);
+
+      // start scan after prepended entry
+      scan(d_scanOut + 1, d_filterOut, numElems, gridSize, blockSize);
       checkCudaErrors(cudaMemcpy(h_scanOutLast, d_scanOut + numElems - 1, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
       compact<<<gridSize, blockSize>>>(d_vals_dst, d_pos_dst, d_vals_src, d_pos_src, d_filterOut, d_scanOut, numElems, start);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
       start += *h_scanOutLast + *h_filterOutLast;
     }
 
@@ -125,6 +153,8 @@ void your_sort(unsigned int* const d_inputVals,
     std::swap(d_pos_dst, d_pos_src);
   }
 
+  delete[] h_filterOutLast;
+  delete[] h_scanOutLast;
   checkCudaErrors(cudaFree(d_filterOut));
   checkCudaErrors(cudaFree(d_scanOut));
 
