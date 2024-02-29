@@ -47,11 +47,12 @@ __global__
 void filter(
   unsigned int *outputVals, unsigned int * const inputVals, int numElems, int numBins, unsigned int i, int b
 ) {
-  unsigned int mask = (numBins - 1) << i;
+  unsigned int mask = (b << i);
+  unsigned int invMask = (numBins - b - 1) << i;
   int j = blockIdx.x * blockDim.x + threadIdx.x;
   if (j < numElems) {
-    unsigned int t = 1 - ((inputVals[j] & mask) >> i);  // 1 if bit is unset
-    t = t - 2 * b * t + b;  // flips t if b is 1
+    unsigned int t = (inputVals[j] & mask) == mask;
+    t &= (~inputVals[j] & invMask) == invMask;
     outputVals[j] = t;
   }
 }
@@ -115,7 +116,7 @@ void your_sort(unsigned int* const d_inputVals,
   int blockSize = 1024;
   int gridSize = ceil((float) numElems / blockSize);
 
-  const int numBits = 1; // TODO: generalize
+  const int numBits = 3;
   const int numBins = 1 << numBits;
 
   unsigned int *d_vals_src = d_inputVals;
