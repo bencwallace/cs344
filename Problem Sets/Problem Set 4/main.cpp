@@ -69,7 +69,12 @@ int main(int argc, char **argv) {
   timer.Start();
 
   //call the students' code
-  your_sort(inputVals, inputPos, outputVals, outputPos, numElems);
+  unsigned int *d_inputValsCopy, *d_inputPosCopy;
+  checkCudaErrors(cudaMalloc(&d_inputValsCopy, numElems * sizeof(unsigned int)));
+  checkCudaErrors(cudaMalloc(&d_inputPosCopy, numElems * sizeof(unsigned int)));
+  checkCudaErrors(cudaMemcpy(d_inputValsCopy, inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+  checkCudaErrors(cudaMemcpy(d_inputPosCopy, inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+  your_sort(d_inputValsCopy, d_inputPosCopy, outputVals, outputPos, numElems);
 
   timer.Stop();
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
