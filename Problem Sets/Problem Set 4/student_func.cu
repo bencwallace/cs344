@@ -2,6 +2,8 @@
 //Radix Sorting
 
 #include "utils.h"
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
 #include <thrust/host_vector.h>
 
 /* Red Eye Removal
@@ -131,9 +133,13 @@ void your_sort(unsigned int* const d_inputVals,
   checkCudaErrors(cudaMalloc(&d_scanOut, (numElems + 1) * sizeof(unsigned int)));
   checkCudaErrors(cudaMemset(d_scanOut, 0, sizeof(unsigned int)));
 
+  thrust::device_ptr<unsigned int> d_ptr = thrust::device_pointer_cast(d_inputVals);
+  unsigned int maxVal = *(thrust::max_element(d_ptr, d_ptr + numElems));
+  unsigned int maxRounds = ceil(log2(maxVal));
+
   unsigned int *h_filterOutLast = new unsigned int[1];
   unsigned int *h_scanOutLast = new unsigned int[1];
-  for (unsigned int i = 0; i < 8 * sizeof(unsigned int); i += numBits) {
+  for (unsigned int i = 0; i < maxRounds; i += numBits) {
     unsigned int start = 0;
     for (int b = 0; b < numBins; ++b) {
       filter<<<gridSize, blockSize>>>(d_filterOut, d_vals_src, numElems, numBins, i, b);
